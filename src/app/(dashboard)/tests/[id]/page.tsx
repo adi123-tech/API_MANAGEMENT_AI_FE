@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import dynamic from 'next/dynamic';
-import { Plus, Trash2, Play, Sparkles, ArrowLeft, CheckCircle2, XCircle, Clock, Loader2, Zap, Copy, Check } from 'lucide-react';
+import { Plus, Trash2, Play, Sparkles, ArrowLeft, CheckCircle2, XCircle, Clock, Loader2, Zap, Copy, Check, ShieldCheck } from 'lucide-react';
 import { testsApi, environmentsApi, aiApi } from '@/services/api';
 import { useProjectStore } from '@/stores/projectStore';
 import { cn, methodColors } from '@/lib/utils';
@@ -15,7 +15,17 @@ import { parseCurl } from '@/lib/curlParser';
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
-const TABS = ['Headers', 'Params', 'Body', 'Assertions', 'Chain Vars'];
+const TABS = ['Headers', 'Params', 'Body', 'Assertions', 'Pre-Auth', 'Chain Vars'];
+
+interface PreAuth {
+  enabled: boolean;
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: string;
+  tokenPath: string;
+  headerName: string;
+}
 
 interface Assertion {
   type: string;
@@ -43,6 +53,9 @@ export default function TestDetailPage() {
   const [assertions, setAssertions] = useState<Assertion[]>([
     { type: 'status', operator: 'equals', expected: '200', description: 'Status should be 200' },
   ]);
+  const [preAuth, setPreAuth] = useState<PreAuth>({
+    enabled: false, url: '', method: 'POST', headers: {}, body: '{}', tokenPath: 'data.accessToken', headerName: 'x-authorization',
+  });
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [environmentId, setEnvironmentId] = useState('');
   const [initialized, setInitialized] = useState(false);
@@ -87,6 +100,17 @@ export default function TestDetailPage() {
         ...a,
         expected: String(a.expected),
       })));
+    }
+    if (test.preAuth) {
+      setPreAuth({
+        enabled: test.preAuth.enabled ?? false,
+        url: test.preAuth.url || '',
+        method: test.preAuth.method || 'POST',
+        headers: test.preAuth.headers || {},
+        body: test.preAuth.body ? JSON.stringify(test.preAuth.body, null, 2) : '{}',
+        tokenPath: test.preAuth.tokenPath || 'data.accessToken',
+        headerName: test.preAuth.headerName || 'x-authorization',
+      });
     }
     setInitialized(true);
   }, [testData, initialized]);
@@ -211,6 +235,15 @@ export default function TestDetailPage() {
             ...a,
             expected: a.type === 'status' || a.type === 'responseTime' ? Number(a.expected) : a.expected,
           })),
+          preAuth: {
+            enabled: preAuth.enabled,
+            url: preAuth.url,
+            method: preAuth.method,
+            headers: preAuth.headers,
+            body: preAuth.body ? (() => { try { return JSON.parse(preAuth.body); } catch { return preAuth.body; } })() : undefined,
+            tokenPath: preAuth.tokenPath,
+            headerName: preAuth.headerName,
+          },
         },
         { onSuccess: () => resolve(), onError: (e) => reject(e) }
       );
@@ -534,6 +567,163 @@ export default function TestDetailPage() {
             </div>
           )}
 
+          {activeTab === 'Pre-Auth' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-primary" />
+                  <span className="text-sm font-medium">Pre-request Authentication</span>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <span className="text-xs text-muted-foreground">{preAuth.enabled ? 'Enabled' : 'Disabled'}</span>
+                  <button
+                    onClick={() => setPreAuth((p) => ({ ...p, enabled: !p.enabled }))}
+                    className={cn(
+                      'relative inline-flex w-11 h-6 flex-shrink-0 rounded-full transition-colors duration-200',
+                      preAuth.enabled ? 'bg-primary' : 'bg-muted border border-border'
+                    )}
+                  >
+                    <span className={cn(
+                      'absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200',
+                      preAuth.enabled ? 'translate-x-5' : 'translate-x-0'
+                    )} />
+                  </button>
+                </label>
+              </div>
+
+              {preAuth.enabled && (
+                <div className="space-y-3 p-3 bg-secondary/40 rounded-lg border border-border">
+                  <p className="text-xs text-muted-foreground">
+                    Before each run, this login request will be made and the token will be injected into your headers automatically.
+                  </p>
+
+                  <div className="flex gap-2">
+                    <select
+                      value={preAuth.method}
+                      onChange={(e) => setPreAuth((p) => ({ ...p, method: e.target.value }))}
+                      className="bg-secondary border border-border rounded-lg px-2 py-1.5 text-xs outline-none"
+                    >
+                      {['POST', 'GET', 'PUT'].map((m) => <option key={m}>{m}</option>)}
+                    </select>
+                    <input
+                      value={preAuth.url}
+                      onChange={(e) => {
+                        const val = e.target.value.trimStart();
+                        if (/^curl\s/i.test(val)) {
+                          const parsed = parseCurl(val);
+                          if (parsed) {
+                            setPreAuth((p) => ({
+                              ...p,
+                              method: parsed.method,
+                              url: parsed.url,
+                              headers: parsed.headers || {},
+                              body: parsed.body || '{}',
+                            }));
+                            toast({ title: 'cURL imported into Pre-Auth' });
+                            return;
+                          }
+                        }
+                        setPreAuth((p) => ({ ...p, url: val }));
+                      }}
+                      placeholder="Paste cURL or enter login URL..."
+                      className="flex-1 bg-secondary border border-border rounded-lg px-3 py-1.5 text-xs font-mono outline-none focus:ring-1 focus:ring-primary"
+                    />
+                  </div>
+
+                  {/* Headers captured from cURL */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs text-muted-foreground">
+                        Login headers
+                        {Object.keys(preAuth.headers).length > 0 && (
+                          <span className="ml-1.5 px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[10px]">
+                            {Object.keys(preAuth.headers).length}
+                          </span>
+                        )}
+                      </label>
+                      <button
+                        onClick={() => setPreAuth((p) => ({ ...p, headers: { ...p.headers, '': '' } }))}
+                        className="text-[10px] text-primary hover:underline"
+                      >
+                        + Add
+                      </button>
+                    </div>
+                    <div className="space-y-1.5">
+                      {Object.keys(preAuth.headers).length === 0 && (
+                        <p className="text-[11px] text-muted-foreground italic">No headers — paste a cURL above to auto-fill</p>
+                      )}
+                      {Object.entries(preAuth.headers).map(([k, v], i) => (
+                        <div key={i} className="flex gap-2">
+                          <input
+                            value={k}
+                            onChange={(e) => {
+                              const h = { ...preAuth.headers };
+                              delete h[k];
+                              h[e.target.value] = v;
+                              setPreAuth((p) => ({ ...p, headers: h }));
+                            }}
+                            placeholder="Header name"
+                            className="flex-1 bg-secondary border border-border rounded-lg px-2 py-1 text-xs font-mono outline-none"
+                          />
+                          <input
+                            value={v}
+                            onChange={(e) => setPreAuth((p) => ({ ...p, headers: { ...p.headers, [k]: e.target.value } }))}
+                            placeholder="Value"
+                            className="flex-1 bg-secondary border border-border rounded-lg px-2 py-1 text-xs font-mono outline-none"
+                          />
+                          <button
+                            onClick={() => {
+                              const h = { ...preAuth.headers };
+                              delete h[k];
+                              setPreAuth((p) => ({ ...p, headers: h }));
+                            }}
+                            className="text-muted-foreground hover:text-red-400"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">Login request body (JSON)</label>
+                    <textarea
+                      value={preAuth.body}
+                      onChange={(e) => setPreAuth((p) => ({ ...p, body: e.target.value }))}
+                      rows={4}
+                      className="w-full bg-secondary border border-border rounded-lg px-3 py-2 text-xs font-mono outline-none resize-none"
+                      placeholder='{"username": "...", "password": "..."}'
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Token path in response</label>
+                      <input
+                        value={preAuth.tokenPath}
+                        onChange={(e) => setPreAuth((p) => ({ ...p, tokenPath: e.target.value }))}
+                        placeholder="data.accessToken"
+                        className="w-full bg-secondary border border-border rounded-lg px-3 py-1.5 text-xs font-mono outline-none"
+                      />
+                      <p className="text-[10px] text-muted-foreground mt-1">Dot-notation path to token in response body</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Inject into header</label>
+                      <input
+                        value={preAuth.headerName}
+                        onChange={(e) => setPreAuth((p) => ({ ...p, headerName: e.target.value }))}
+                        placeholder="x-authorization"
+                        className="w-full bg-secondary border border-border rounded-lg px-3 py-1.5 text-xs font-mono outline-none"
+                      />
+                      <p className="text-[10px] text-muted-foreground mt-1">Header name to inject the token into</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'Chain Vars' && (
             <div className="text-sm text-muted-foreground p-4 text-center">
               <p>Chain variables allow you to extract values from this response</p>
@@ -591,6 +781,8 @@ interface SyncResult {
   response?: ExecStep['response'];
   duration: number;
   error?: string;
+  preAuthError?: string;
+  preAuthCurl?: string;
 }
 
 interface GenRunResult {
@@ -677,6 +869,15 @@ function SyncResultPanel({ result, loading }: { result: SyncResult | null; loadi
       <div className="p-4">
         {activeTab === 'assertions' && (
           <div className="space-y-2">
+            {result.preAuthError && (
+              <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 text-xs text-yellow-400 space-y-2">
+                <div className="flex items-start gap-2">
+                  <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                  <span><strong>Pre-Auth failed:</strong> {result.preAuthError} — test ran with existing headers.</span>
+                </div>
+                {result.preAuthCurl && <CurlBlock curl={result.preAuthCurl} />}
+              </div>
+            )}
             {result.error && <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-xs text-red-400 font-mono">{result.error}</div>}
             {assertions.length === 0 && !result.error && <p className="text-xs text-muted-foreground text-center py-4">No assertions defined</p>}
             {assertions.map((a, i) => (
